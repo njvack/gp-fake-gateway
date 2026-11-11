@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: njvack/openconnect
-          ref: ${{ vars.OPENCONNECT_REF || 'master' }}
+          ref: ${{ vars.OPENCONNECT_REF || 'macos' }}
           path: openconnect
       - name: Install openconnect build dependencies
         run: |
