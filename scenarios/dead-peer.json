@@ -1,0 +1,10 @@
+{
+  "name": "gateway stops answering keepalives on an open tunnel",
+  "profile": "default",
+  "transport": "https",
+  "config": {},
+  "rules": [
+    {"when": {"request": "tunnel", "nth": 1}, "after": 5, "do": "ignore_keepalive"}
+  ],
+  "expect": {"connected_within": 60}
+}

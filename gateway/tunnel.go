@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -75,7 +76,11 @@ type tunnelConn struct {
 	net.Conn
 	user, cookie string
 	closeOnce    sync.Once
+	// Set by a scenario rule: stop answering keepalives on this tunnel.
+	ignoreKeepalive atomic.Bool
 }
+
+type tunnelRulesKey struct{}
 
 func (t *tunnelConn) Close() error {
 	var err error
@@ -99,10 +104,11 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.serveTunnel(conn, rw.Reader, user, cookie)
+	rules, _ := r.Context().Value(tunnelRulesKey{}).([]Rule)
+	s.serveTunnel(conn, rw.Reader, user, cookie, rules)
 }
 
-func (s *Server) serveTunnel(conn net.Conn, br *bufio.Reader, user, cookie string) {
+func (s *Server) serveTunnel(conn net.Conn, br *bufio.Reader, user, cookie string, rules []Rule) {
 	defer conn.Close()
 	cfg := s.cfg.get()
 
@@ -137,6 +143,26 @@ func (s *Server) serveTunnel(conn net.Conn, br *bufio.Reader, user, cookie strin
 		defer timer.Stop()
 	}
 
+	for _, rule := range rules {
+		d := time.Duration(rule.After * float64(time.Second))
+		var timer *time.Timer
+		switch rule.Do {
+		case "drop_tunnel":
+			timer = time.AfterFunc(d, func() {
+				s.log.Info("scenario: dropping tunnel", "user", user, "after", rule.After)
+				t.Close()
+			})
+		case "ignore_keepalive":
+			timer = time.AfterFunc(d, func() {
+				s.log.Info("scenario: ignoring keepalives", "user", user, "after", rule.After)
+				t.ignoreKeepalive.Store(true)
+			})
+		}
+		if timer != nil {
+			defer timer.Stop()
+		}
+	}
+
 	if _, err := io.WriteString(t, "START_TUNNEL"); err != nil {
 		return
 	}
@@ -151,7 +177,7 @@ func (s *Server) serveTunnel(conn net.Conn, br *bufio.Reader, user, cookie strin
 			return
 		}
 		if f.IsKeepalive() {
-			if s.cfg.get().IgnoreKeepalive {
+			if s.cfg.get().IgnoreKeepalive || t.ignoreKeepalive.Load() {
 				continue
 			}
 			s.sessions.update(cookie, func(ss *Session) { ss.Keepalives++ })

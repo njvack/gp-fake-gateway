@@ -55,6 +55,12 @@ Plain HTTP; keep it on loopback.
 | `GET /sessions` | every session: cookie, IP, timers, tunnel count and state, keepalives, packets, HIP checks and the submitted HIP reports |
 | `POST /sessions/expire[?user=NAME]` | expire sessions and close their tunnels |
 | `POST /tunnels/drop` | close every tunnel but keep sessions valid, as a network failure would |
+| `GET /scenario` | the scenario rules, request counts by kind, and every rule that fired |
+| `PUT /scenario` | load a scenario: its profile and config merge over the current config, its rules replace the old ones, counts reset |
+
+## Scenarios
+
+`fakegp -scenario FILE` (or `PUT /scenario`) loads a scenario: a gateway profile, config overrides, and rules that fire on the nth request of a kind, such as "refuse the 2nd to 4th tunnel with 503" or "stop answering keepalives 30 s into the first tunnel". Scenarios are how a gateway bug seen in an Albi incident file becomes a regression test. [scenarios/README.md](scenarios/README.md) has the format and the steps; the files in `scenarios/` run in Albi's CI.
 
 ## Tests
 

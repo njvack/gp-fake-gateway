@@ -1,0 +1,5 @@
+{
+  "description": "The fake's own behaviour: a well-behaved gateway as openconnect's gpst.c expects it. Profiles for real gateway versions go beside this one, named for the PAN-OS or GlobalProtect version an incident file reports.",
+  "config": {},
+  "rules": []
+}

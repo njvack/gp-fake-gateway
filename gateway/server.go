@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/xml"
 	"fmt"
@@ -27,6 +28,7 @@ type Server struct {
 	mu         sync.Mutex
 	challenges map[string]string // inputStr -> user
 	tunnels    map[*tunnelConn]struct{}
+	rules      ruleSet
 }
 
 // New returns a server using cfg.
@@ -77,6 +79,14 @@ func (s *Server) httpHandler() http.Handler {
 			time.Sleep(time.Duration(d) * time.Second)
 		}
 		s.log.Info("request", "method", r.Method, "path", r.URL.Path)
+		handled, after, tunnelRules := s.applyRules(w, r)
+		defer s.runAfter(after)
+		if handled {
+			return
+		}
+		if len(tunnelRules) > 0 {
+			r = r.WithContext(context.WithValue(r.Context(), tunnelRulesKey{}, tunnelRules))
+		}
 		mux.ServeHTTP(w, r)
 	})
 }

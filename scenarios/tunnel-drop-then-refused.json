@@ -1,0 +1,11 @@
+{
+  "name": "tunnel drops, then the next tunnel requests are refused with 503",
+  "profile": "default",
+  "transport": "https",
+  "config": {},
+  "rules": [
+    {"when": {"request": "tunnel", "nth": 1}, "after": 5, "do": "drop_tunnel"},
+    {"when": {"request": "tunnel", "from": 2, "to": 4}, "respond": {"status": 503}}
+  ],
+  "expect": {"connected_within": 60}
+}
