@@ -60,6 +60,6 @@ Plain HTTP; keep it on loopback.
 
 `go test ./...` covers framing, the packet responder, login, config, HIP, the tunnel, cookie expiry and logout.
 
-`e2e/run.sh OPENCONNECT FAKEGP` runs a real openconnect against the fake over a real tun device (Linux, root). It checks traffic, reconnect after a dropped tunnel, exit code 2 after the session expires, and HIP report submission. CI builds openconnect from `njvack/openconnect` and runs it on every push.
+`e2e/run.sh OPENCONNECT FAKEGP` runs a real openconnect against the fake over a real tun device (Linux, root). It checks traffic, reconnect after a dropped tunnel, exit code 2 after the session expires, and HIP report submission. CI builds openconnect from the `macos` branch of `njvack/openconnect` (override with the `OPENCONNECT_REF` repository variable) and runs it on every push.
 
-It also reports a known upstream behavior without failing: one failed HIP recheck ends the session. That flips to a pass once the HIP-retry patch lands.
+It also tests a failed HIP recheck. Upstream openconnect ends the session there, which the script reports as `KNOWN` without failing. With the `macos` branch's HIP-retry patch the session survives, and the script then checks that a recheck succeeds again and traffic still flows once the fault clears. Set `E2E_EXPECT_HIP_RETRY=1` to make the upstream behavior a failure.

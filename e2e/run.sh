@@ -101,13 +101,31 @@ start_oc "$WORK/oc2.log" --force-trojan=5 --csd-wrapper="$HERE/hipreport-stub.sh
 wait_for 15 ping_tunnel
 if [ "$(hip_reports)" -ge 1 ]; then pass "HIP report submitted"; else fail "no HIP report reached the gateway"; fi
 
-# Known upstream behavior the plan patches: one failed HIP recheck ends the
-# session. Reported, not failed, until the patch lands.
+# Upstream openconnect ends the session on one failed HIP recheck; the
+# macos branch's HIP-retry patch keeps it up and retries. Set
+# E2E_EXPECT_HIP_RETRY=1 to fail on the upstream behavior instead of
+# reporting it as KNOWN.
+# hip_checks: successful hipreportcheck calls on the live session.
+hip_checks() {
+  ctl GET /sessions | python3 -c 'import json, sys; print(max([s["hip_checks"] for s in json.load(sys.stdin) if not s["expired"] and not s["logged_out"]] or [0]))'
+}
+hip_checks_above() { [ "$(hip_checks)" -gt "$1" ]; }
 ctl PUT /config '{"hip_check_fail": true}' >/dev/null
 code=$(wait_exit 20)
 if [ "$code" = timeout ]; then
   pass "session survived a failed HIP recheck"
+  # With the fault cleared, the next retry should succeed and the tunnel
+  # should still carry traffic.
+  before=$(hip_checks)
+  ctl PUT /config '{"hip_check_fail": false}' >/dev/null
+  if wait_for 30 hip_checks_above "$before" && wait_for 15 ping_tunnel; then
+    pass "HIP recheck succeeded again after the fault cleared, tunnel still up"
+  else
+    fail "no successful HIP recheck or no traffic after the fault cleared"
+  fi
   stop_oc
+elif [ "${E2E_EXPECT_HIP_RETRY:-0}" = 1 ]; then
+  fail "a failed HIP recheck ended the session (exit $code)"
 else
   echo "KNOWN: a failed HIP recheck ended the session (exit $code); see the HIP-retry patch"
 fi
