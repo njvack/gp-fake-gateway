@@ -29,6 +29,7 @@ func main() {
 	hosts := flag.String("hosts", "localhost,127.0.0.1,::1", "comma-separated names and IPs for the generated certificate")
 	configFile := flag.String("config", "", "JSON config file, merged over the defaults")
 	pinFile := flag.String("pin-file", "", "write the openconnect --servercert pin here")
+	scenarioFile := flag.String("scenario", "", "scenario file (see scenarios/): a profile, config and fault rules")
 	verbose := flag.Bool("v", false, "debug logging")
 	flag.Parse()
 
@@ -70,6 +71,15 @@ func main() {
 	}
 
 	srv := gateway.New(cfg, log)
+	if *scenarioFile != "" {
+		data, err := os.ReadFile(*scenarioFile)
+		if err == nil {
+			err = srv.LoadScenario(data)
+		}
+		if err != nil {
+			fatal(log, "scenario", err)
+		}
+	}
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {

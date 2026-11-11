@@ -25,6 +25,9 @@ import (
 //	GET  /sessions          every session, with tunnel and HIP state
 //	POST /sessions/expire   expire all sessions, or ?user=NAME
 //	POST /tunnels/drop      close every tunnel, keeping sessions valid
+//	GET  /scenario          the scenario rules, request counts, and rules fired
+//	PUT  /scenario          load a scenario: merge its profile and config over
+//	                        the current config, replace the rules, reset counts
 func (s *Server) ControlHandler() http.Handler {
 	mux := http.NewServeMux()
 	writeJSON := func(w http.ResponseWriter, v any) {
@@ -58,6 +61,20 @@ func (s *Server) ControlHandler() http.Handler {
 	})
 	mux.HandleFunc("POST /tunnels/drop", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]int{"dropped": s.DropTunnels()})
+	})
+	mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, s.rules.status())
+	})
+	mux.HandleFunc("PUT /scenario", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		if err == nil {
+			err = s.LoadScenario(body)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, s.rules.status())
 	})
 	return mux
 }

@@ -1,0 +1,11 @@
+{
+  "name": "tunnel drops and the reconnect's getconfig takes 20 s",
+  "profile": "default",
+  "transport": "https",
+  "config": {},
+  "rules": [
+    {"when": {"request": "tunnel", "nth": 1}, "after": 5, "do": "drop_tunnel"},
+    {"when": {"request": "getconfig", "nth": 2}, "delay": 20}
+  ],
+  "expect": {"connected_within": 60}
+}

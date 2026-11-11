@@ -1,0 +1,10 @@
+{
+  "name": "HIP rechecks fail with HTTP 500 for a while",
+  "profile": "default",
+  "transport": "https",
+  "config": {"hip_interval": 5},
+  "rules": [
+    {"when": {"request": "hipreportcheck", "from": 2, "to": 4}, "respond": {"status": 500}}
+  ],
+  "expect": {"connected_within": 60}
+}
