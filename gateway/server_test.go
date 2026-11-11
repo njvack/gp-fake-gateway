@@ -172,14 +172,16 @@ func TestHIPCheckAndReport(t *testing.T) {
 	if _, body := f.post("/ssl-vpn/hipreportcheck.esp", form); !strings.Contains(body, "<hip-report-needed>yes<") {
 		t.Fatalf("first check: %s", body)
 	}
-	rep := url.Values{"user": {"test"}, "authcookie": {cookie}, "md5": {"abc"}, "report": {"<hip-report/>"}}
+	// Like openconnect, send the md5 only inside the report.
+	report := "<hip-report><md5-sum>abc</md5-sum></hip-report>"
+	rep := url.Values{"user": {"test"}, "authcookie": {cookie}, "report": {report}}
 	if _, body := f.post("/ssl-vpn/hipreport.esp", rep); !strings.Contains(body, `status="success"`) {
 		t.Fatalf("report: %s", body)
 	}
 	if _, body := f.post("/ssl-vpn/hipreportcheck.esp", form); !strings.Contains(body, "<hip-report-needed>no<") {
 		t.Errorf("check after report: %s", body)
 	}
-	if got := f.srv.Sessions()[0].HIPReports; len(got) != 1 || got[0].Report != "<hip-report/>" {
+	if got := f.srv.Sessions()[0].HIPReports; len(got) != 1 || got[0].Report != report || got[0].MD5 != "abc" {
 		t.Errorf("stored reports = %+v", got)
 	}
 	f.srv.cfg.merge([]byte(`{"hip_check_fail": true}`))

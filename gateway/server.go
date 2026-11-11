@@ -326,7 +326,10 @@ func (s *Server) hipCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hipReport(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	cfg := s.cfg.get()
-	rep := HIPReport{Received: s.now(), MD5: r.Form.Get("md5"), Report: r.Form.Get("report")}
+	rep := HIPReport{Received: s.now(), MD5: reportMD5(r.Form.Get("report")), Report: r.Form.Get("report")}
+	if rep.MD5 == "" {
+		rep.MD5 = r.Form.Get("md5")
+	}
 	ok := s.sessions.use(r.Form.Get("authcookie"), r.Form.Get("user"), cfg, func(ss *Session) {
 		ss.HIPReports = append(ss.HIPReports, rep)
 	})
@@ -390,4 +393,16 @@ func (s *Server) closeTunnels(cookie string) int {
 		t.Close()
 	}
 	return len(victims)
+}
+
+// reportMD5 is the report's <md5-sum>. openconnect sends the md5 only to
+// hipreportcheck.esp; hipreport.esp carries it inside the report.
+func reportMD5(report string) string {
+	var doc struct {
+		MD5 string `xml:"md5-sum"`
+	}
+	if xml.Unmarshal([]byte(report), &doc) != nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.MD5)
 }
