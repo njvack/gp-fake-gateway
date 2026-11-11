@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  e2e:
+    # Real openconnect, built from njvack/openconnect, against fakegp over a
+    # real tun device. Only the fake's test subnet is routed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/checkout@v4
+        with:
+          repository: njvack/openconnect
+          ref: ${{ vars.OPENCONNECT_REF || 'master' }}
+          path: openconnect
+      - name: Install openconnect build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config gettext \
+            libxml2-dev libgnutls28-dev liblz4-dev iproute2 iputils-ping
+      - name: Build openconnect
+        working-directory: openconnect
+        run: |
+          ./autogen.sh
+          ./configure --disable-nls --with-vpnc-script=/bin/true
+          make -j"$(nproc)"
+      - run: go build -o fakegp ./cmd/fakegp
+      - run: sudo e2e/run.sh "$PWD/openconnect/openconnect" "$PWD/fakegp"
