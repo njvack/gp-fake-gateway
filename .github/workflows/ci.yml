@@ -3,7 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: &ignore
+      - '**.md'
   pull_request:
+    paths-ignore: *ignore
+  workflow_dispatch:
+
+# A new push to a PR cancels the run for the push before it; runs on main
+# always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
