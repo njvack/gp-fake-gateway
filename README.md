@@ -29,9 +29,12 @@ The default user is `test` / `test`, the challenge answer is `1`, the client get
 | `users` | `{"test": "test"}` | user name to password |
 | `second_factor` | `"challenge"` | `""` for password only |
 | `second_factor_answer` | `"1"` | the answer the challenge accepts |
+| `second_factor_prompt` | a Duo-style menu | the challenge's message |
+| `portal_second_factor` | false | the portal's getconfig.esp challenges too (a second push for clients that log in to the portal, then the gateway) |
+| `challenge_style` | `"xml"` | how the gateway sends its challenge: `"xml"` or `"javascript"` (an HTML page, as PAN-OS 11.1 does) |
 | `client_ipv4`, `client_ipv6` | `10.99.0.2`, none | addresses handed out |
 | `access_routes`, `exclude_routes` | `["10.99.0.0/24"]`, none | split routes (IPv4 and IPv6 mixed) |
-| `dns`, `dns_suffix`, `mtu` | `10.99.0.53`, `fake.test`, 1400 | |
+| `dns`, `dns_suffix`, `mtu` | `10.99.0.53`, `fake.test`, 1400 | `mtu` 0 is sent as `<mtu>0</mtu>`, as a gateway with no MTU set does |
 | `lifetime` | 86400 | seconds a cookie is valid after login |
 | `idle_timeout` | 10800 | seconds a cookie survives with no tunnel up |
 | `rekey` | 0 | if set, sent as the tunnel timeout (openconnect reconnects at rekey−60 s) |
@@ -43,6 +46,17 @@ The default user is `test` / `test`, the challenge answer is `1`, the client get
 | `drop_tunnel_after` | 0 | close each tunnel this many seconds after it starts |
 | `stall_seconds` | 0 | delay every HTTP response |
 | `ignore_keepalive` | false | stop answering GPST keepalives (a dead path) |
+
+The portal never hands out an authentication override cookie (`portal-userauthcookie` is `empty`), so a client always logs in to the gateway with the password again. Response shapes (extra getconfig fields, the 22 jnlp arguments, hipreportcheck's `delay` and `quarantine`) follow a real PAN-OS 11.1 capture.
+
+### Profiles
+
+`-profile NAME` starts from a compiled-in profile in `gateway/profiles/`; `-config` and scenarios merge over it.
+
+| Profile | Behaves like |
+| --- | --- |
+| `default` | the fake's own defaults |
+| `panos-11.1` | PAN-OS 11.1.13 with Duo on portal and gateway, captured in njvack/albi#15: portal challenge, JavaScript gateway challenge, MTU 0, 72 h cookies, 12 h rekey and idle timeout, HIP report wanted on connect |
 
 ## Control API
 

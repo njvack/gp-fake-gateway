@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
@@ -112,20 +114,35 @@ const invalidCookie = "Invalid authentication cookie"
 
 func (s *Server) prelogin(iface string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		license := ""
+		if iface == "gateway" {
+			license = "\n<license>yes</license>"
+		}
 		writeXML(w, http.StatusOK, `<?xml version="1.0" encoding="UTF-8" ?>
 <prelogin-response>
 <status>Success</status>
-<ccusername/>
+<ccusername></ccusername>
 <autosubmit>false</autosubmit>
-<msg/>
-<newmsg/>
+<msg></msg>
+<newmsg></newmsg>`+license+`
 <authentication-message>Enter login credentials for the fake GP `+iface+`</authentication-message>
 <username-label>Username</username-label>
 <password-label>Password</password-label>
 <panos-version>1</panos-version>
-<region>US</region>
+<saml-default-browser>yes</saml-default-browser>
+<auth-api>no</auth-api><server-ip>`+esc(localHost(r))+`</server-ip><default-browser>no</default-browser><region>US</region>
 </prelogin-response>`)
 	}
+}
+
+// localHost is the address the client connected to.
+func localHost(r *http.Request) string {
+	if a, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if host, _, err := net.SplitHostPort(a.String()); err == nil {
+			return host
+		}
+	}
+	return ""
 }
 
 func (s *Server) checkPassword(cfg Config, user, passwd string) bool {
@@ -133,28 +150,12 @@ func (s *Server) checkPassword(cfg Config, user, passwd string) bool {
 	return ok && user != "" && passwd == want
 }
 
-func (s *Server) portalConfig(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	cfg := s.cfg.get()
-	if !s.checkPassword(cfg, r.Form.Get("user"), r.Form.Get("passwd")) {
-		http.Error(w, "Invalid username or password", 512)
-		return
-	}
-	writeXML(w, http.StatusOK, fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" ?>
-<policy><version>6.2.8-1045</version>
-<gateways><external><list>
-<entry name="%s"><description>Fake gateway</description></entry>
-</list></external></gateways>
-<hip-collection><hip-report-interval>%d</hip-report-interval></hip-collection>
-</policy>`, esc(r.Host), cfg.HIPInterval))
-}
-
-func (s *Server) gatewayLogin(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	cfg := s.cfg.get()
+// authenticate runs the password and, if asked for, challenge steps of a
+// portal getconfig.esp or gateway login.esp. It returns the user once both
+// are done; otherwise it has written the answer (an error or a challenge).
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, cfg Config, challenge bool, style string) (string, bool) {
 	user, passwd, inputStr := r.Form.Get("user"), r.Form.Get("passwd"), r.Form.Get("inputStr")
-
-	if cfg.SecondFactor == "challenge" && inputStr != "" {
+	if challenge && inputStr != "" {
 		// Second step: the answer to a challenge we issued.
 		s.mu.Lock()
 		want, ok := s.challenges[inputStr]
@@ -163,23 +164,149 @@ func (s *Server) gatewayLogin(w http.ResponseWriter, r *http.Request) {
 		if !ok || want != user || passwd != cfg.SecondFactorAnswer {
 			s.log.Info("second factor rejected", "user", user)
 			http.Error(w, "Invalid username or password", 512)
-			return
+			return "", false
 		}
-	} else {
-		if !s.checkPassword(cfg, user, passwd) {
-			s.log.Info("password rejected", "user", user)
-			http.Error(w, "Invalid username or password", 512)
-			return
-		}
-		if cfg.SecondFactor == "challenge" {
-			token := randomHex(8)
-			s.mu.Lock()
-			s.challenges[token] = user
-			s.mu.Unlock()
-			writeXML(w, http.StatusOK, `<challenge><user>`+esc(user)+`</user><inputstr>`+token+
-				`</inputstr><respmsg>`+esc(cfg.SecondFactorPrompt)+`</respmsg></challenge>`)
-			return
-		}
+		return user, true
+	}
+	if !s.checkPassword(cfg, user, passwd) {
+		s.log.Info("password rejected", "user", user)
+		http.Error(w, "Invalid username or password", 512)
+		return "", false
+	}
+	if !challenge {
+		return user, true
+	}
+	token := randomHex(8)
+	s.mu.Lock()
+	s.challenges[token] = user
+	s.mu.Unlock()
+	writeChallenge(w, style, user, token, cfg.SecondFactorPrompt)
+	return "", false
+}
+
+// writeChallenge sends a GP challenge. PAN-OS sends it as XML from the
+// portal and, at least in 11.1, as JavaScript in HTML from the gateway.
+func writeChallenge(w http.ResponseWriter, style, user, token, prompt string) {
+	if style != "javascript" {
+		writeXML(w, http.StatusOK, "<challenge>\n<user>"+esc(user)+"</user>\n<inputstr>"+token+
+			"</inputstr>\n<respmsg>"+esc(prompt)+"</respmsg>\n</challenge>\n")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "<html>\n  <head></head>\n  <body>\n  var respStatus = \"Challenge\";\n  var respMsg = %s;\n  thisForm.inputStr.value = \"%s\";\n</body>\n</html>\n",
+		jsString(prompt), token)
+}
+
+// jsString quotes v as a JavaScript string literal. openconnect reads it
+// with a JSON parser.
+func jsString(v string) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.Encode(v)
+	return strings.TrimSpace(b.String())
+}
+
+func (s *Server) portalConfig(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	cfg := s.cfg.get()
+	if _, ok := s.authenticate(w, r, cfg, cfg.SecondFactor == "challenge" && cfg.PortalSecondFactor, "xml"); !ok {
+		return
+	}
+	writeXML(w, http.StatusOK, portalPolicy(r.Host, cfg))
+}
+
+// portalPolicy is the portal's getconfig.esp answer, shaped like PAN-OS
+// 11.1's: the fields clients read, and a sample of the rest.
+func portalPolicy(host string, cfg Config) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" ?>
+<policy>
+  <agent-user-override-key>****</agent-user-override-key>
+  <portal-name>fake-portal</portal-name>
+  <portal-config-version>4100</portal-config-version>
+  <version>6.2.8-948</version>
+  <client-role>global-protect-full</client-role>
+  <gateways>
+    <cutoff-time>5</cutoff-time>
+    <external>
+      <list>
+        <entry name="%[1]s">
+          <description>Fake gateway</description>
+          <priority-rule>
+            <entry name="Any">
+              <priority>1</priority>
+            </entry>
+          </priority-rule>
+        </entry>
+      </list>
+    </external>
+  </gateways>
+  <gateways-v6>
+    <cutoff-time>5</cutoff-time>
+    <external>
+      <list>
+        <entry name="Fake gateway">
+          <fqdn>%[1]s</fqdn>
+          <priority-rule>
+            <entry name="Any">
+              <priority>1</priority>
+            </entry>
+          </priority-rule>
+        </entry>
+      </list>
+    </external>
+  </gateways-v6>
+  <agent-config>
+    <save-user-credentials>2</save-user-credentials>
+    <portal-2fa>no</portal-2fa>
+    <internal-gateway-2fa>no</internal-gateway-2fa>
+    <auto-discovery-external-gateway-2fa>no</auto-discovery-external-gateway-2fa>
+    <manual-only-gateway-2fa>no</manual-only-gateway-2fa>
+    <retry-tunnel>30</retry-tunnel>
+    <retry-timeout>5</retry-timeout>
+    <tunnel-mtu>1400</tunnel-mtu>
+    <portal-timeout>30</portal-timeout>
+    <connect-timeout>60</connect-timeout>
+    <receive-timeout>30</receive-timeout>
+    <split-tunnel-option>network-traffic</split-tunnel-option>
+    <enforce-dns>yes</enforce-dns>
+    <ipv6-preferred>yes</ipv6-preferred>
+  </agent-config>
+  <use-sso>yes</use-sso>
+  <connect-method>on-demand</connect-method>
+  <on-demand>yes</on-demand>
+  <refresh-config>yes</refresh-config>
+  <refresh-config-interval>24</refresh-config-interval>
+  <hip-collection>
+    <hip-report-interval>%[2]d</hip-report-interval>
+    <max-wait-time>30</max-wait-time>
+    <collect-hip-data>yes</collect-hip-data>
+    <default>
+      <category>
+        <member>host-info</member>
+        <member>data-loss-prevention</member>
+        <member>patch-management</member>
+        <member>firewall</member>
+        <member>anti-malware</member>
+        <member>disk-backup</member>
+        <member>disk-encryption</member>
+      </category>
+    </default>
+  </hip-collection>
+
+<portal-userauthcookie>empty</portal-userauthcookie>
+<portal-prelogonuserauthcookie>empty</portal-prelogonuserauthcookie>
+<config-digest>00000000000000000000000000000000</config-digest>
+</policy>`, esc(host), cfg.HIPInterval)
+}
+
+func (s *Server) gatewayLogin(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	cfg := s.cfg.get()
+	user, ok := s.authenticate(w, r, cfg, cfg.SecondFactor == "challenge", cfg.ChallengeStyle)
+	if !ok {
+		return
 	}
 
 	for k, v := range map[string]string{"jnlpReady": "jnlpReady", "ok": "Login", "direct": "yes", "clientVer": "4100", "prot": "https:"} {
@@ -197,16 +324,19 @@ func (s *Server) gatewayLogin(w http.ResponseWriter, r *http.Request) {
 	s.sessions.create(sess)
 	s.log.Info("login", "user", user, "computer", sess.Computer)
 
+	// The 22 arguments PAN-OS 11.1 sends. 15 and 18 are the preferred
+	// addresses; 16 and 17 the portal cookies, "empty" as the portal sends
+	// them; 19 is openconnect's "usually-equals-4".
 	args := []string{
-		"(null)", sess.AuthCookie, "PersistentCookie", sess.Portal, sess.User, "Fake-Auth", "vsys1",
-		sess.Domain, "(null)", "", "", "", "tunnel", "-1", "4100", sess.IPv4, "", "", sess.IPv6,
+		"", sess.AuthCookie, "PersistentCookie", sess.Portal, sess.User, "Fake-Auth", "vsys1",
+		sess.Domain, "", "", "", "", "tunnel", "-1", "4100", sess.IPv4, "empty", "empty", sess.IPv6, "4", "", "",
 	}
 	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="utf-8"?><jnlp><application-desc>`)
+	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<jnlp>\n<application-desc>\n")
 	for _, a := range args {
-		b.WriteString("<argument>" + esc(a) + "</argument>")
+		b.WriteString("<argument>" + esc(a) + "</argument>\n")
 	}
-	b.WriteString("</application-desc></jnlp>")
+	b.WriteString("</application-desc>\n</jnlp>\n")
 	writeXML(w, http.StatusOK, b.String())
 }
 
@@ -251,11 +381,14 @@ func (s *Server) gatewayConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Element order and the extra notification fields follow PAN-OS 11.1.
 	var b strings.Builder
-	b.WriteString("<response>")
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8" ?>` + "\n")
+	b.WriteString(`<response status="success">`)
 	b.WriteString("<need-tunnel>yes</need-tunnel>")
 	b.WriteString("<ssl-tunnel-url>" + TunnelPath + "</ssl-tunnel-url>")
 	b.WriteString("<portal>" + esc(sess.Portal) + "</portal><user>" + esc(sess.User) + "</user>")
+	b.WriteString("<quarantine>no</quarantine>")
 	remaining := cfg.Lifetime - int(s.now().Sub(sess.Issued).Seconds())
 	if cfg.Lifetime > 0 {
 		b.WriteString(fmt.Sprintf("<lifetime>%d</lifetime>", max(remaining, 1)))
@@ -263,19 +396,37 @@ func (s *Server) gatewayConfig(w http.ResponseWriter, r *http.Request) {
 	if cfg.Rekey > 0 {
 		b.WriteString(fmt.Sprintf("<timeout>%d</timeout>", cfg.Rekey))
 	}
+	b.WriteString("<lifetime-notify-prior>3600</lifetime-notify-prior>")
+	b.WriteString("<lifetime-notify-message>Your GlobalProtect session will expire in 30 minutes. Please save your work before your session expires.</lifetime-notify-message>")
+	b.WriteString("<inactivity-notify-prior>1800</inactivity-notify-prior>")
+	b.WriteString("<inactivity-notify-message>Your GlobalProtect session will time out in 30 minutes. Please save your work before your session times out.</inactivity-notify-message>")
+	b.WriteString("<admin-logout-notify-message>Your administrator has logged you out.</admin-logout-notify-message>")
+	b.WriteString(fmt.Sprintf("<user_expires>%d</user_expires>", sess.Issued.Add(365*24*time.Hour).Unix()))
 	if cfg.IdleTimeout > 0 {
 		b.WriteString(fmt.Sprintf("<disconnect-on-idle>%d</disconnect-on-idle>", cfg.IdleTimeout))
 	}
 	b.WriteString("<bw-c2s>1000</bw-c2s><bw-s2c>1000</bw-s2c>")
+	b.WriteString("<panos-version>11.1.13-h16</panos-version>")
+	if host := localHost(r); host != "" {
+		b.WriteString("<gw-address>" + esc(host) + "</gw-address>")
+	}
+	ipv6 := "no"
+	if sess.IPv6 != "" {
+		ipv6 = "yes"
+	}
+	b.WriteString("<ipv6-connection>" + ipv6 + "</ipv6-connection>")
 	b.WriteString("<ip-address>" + esc(sess.IPv4) + "</ip-address><netmask>255.255.255.255</netmask>")
+	b.WriteString("<ip-address-preferred>yes</ip-address-preferred>")
 	if sess.IPv6 != "" {
 		b.WriteString("<ip-address-v6>" + esc(sess.IPv6) + "</ip-address-v6>")
 	}
 	b.WriteString(members("dns", cfg.DNS))
+	b.WriteString("<wins></wins>")
 	b.WriteString(members("dns-suffix", cfg.DNSSuffix))
-	if cfg.MTU > 0 {
-		b.WriteString(fmt.Sprintf("<mtu>%d</mtu>", cfg.MTU))
-	}
+	b.WriteString("<default-gateway>" + esc(sess.IPv4) + "</default-gateway>")
+	// PAN-OS 11.1 sends 0 when no MTU is configured; clients then work one out.
+	b.WriteString(fmt.Sprintf("<mtu>%d</mtu>", cfg.MTU))
+	b.WriteString("<no-direct-access-to-local-network>no</no-direct-access-to-local-network>")
 	var v4, v6, x4, x6 []string
 	for _, rt := range cfg.AccessRoutes {
 		if strings.Contains(rt, ":") {
@@ -295,9 +446,6 @@ func (s *Server) gatewayConfig(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(members("access-routes-v6", v6))
 	b.WriteString(members("exclude-access-routes", x4))
 	b.WriteString(members("exclude-access-routes-v6", x6))
-	if host, _, err := net.SplitHostPort(r.Context().Value(http.LocalAddrContextKey).(net.Addr).String()); err == nil {
-		b.WriteString("<gw-address>" + esc(host) + "</gw-address>")
-	}
 	b.WriteString("</response>")
 	writeXML(w, http.StatusOK, b.String())
 }
@@ -330,7 +478,8 @@ func (s *Server) hipCheck(w http.ResponseWriter, r *http.Request) {
 	if needed {
 		yn = "yes"
 	}
-	writeXML(w, http.StatusOK, `<response status="success"><hip-report-needed>`+yn+`</hip-report-needed></response>`)
+	writeXML(w, http.StatusOK, "<response status=\"success\">\n<hip-report-needed>"+yn+
+		"</hip-report-needed>\n<delay>0</delay>\n<quarantine>no</quarantine>\n</response>\n")
 }
 
 func (s *Server) hipReport(w http.ResponseWriter, r *http.Request) {
@@ -348,7 +497,7 @@ func (s *Server) hipReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("hip report", "user", r.Form.Get("user"), "bytes", len(rep.Report))
-	writeXML(w, http.StatusOK, `<response status="success"/>`)
+	writeXML(w, http.StatusOK, "<response status=\"success\">\n<notification></notification>\n</response>\n")
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -365,7 +514,9 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("logout", "user", r.Form.Get("user"))
-	writeXML(w, http.StatusOK, `<response status="success"/>`)
+	writeXML(w, http.StatusOK, `<?xml version="1.0" encoding="UTF-8" ?>`+"\n<response status=\"success\">\n"+
+		"<portal>"+esc(r.Form.Get("portal"))+"</portal>\n<user>"+esc(r.Form.Get("user"))+"</user>\n"+
+		"<domain>"+esc(r.Form.Get("domain"))+"</domain>\n<computer>"+esc(r.Form.Get("computer"))+"</computer>\n</response>\n")
 }
 
 // ExpireSessions marks sessions expired (all, or one user's) and closes their

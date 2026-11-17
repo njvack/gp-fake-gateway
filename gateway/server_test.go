@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -303,5 +304,84 @@ func TestLogout(t *testing.T) {
 	}
 	if _, _, head := f.openTunnel(cookie); !strings.HasPrefix(head, "HTTP/1.1 502") {
 		t.Errorf("tunnel after logout: %q", head)
+	}
+}
+
+var jsInputStr = regexp.MustCompile(`thisForm\.inputStr\.value = "([0-9a-f]+)";`)
+
+// TestPANOS111Flow walks the login a portal-then-gateway client sees from
+// the panos-11.1 profile: a challenge at the portal, an "empty" portal
+// cookie, then the password again and a JavaScript challenge at the gateway.
+func TestPANOS111Flow(t *testing.T) {
+	f := newFixture(t, func(c *Config) {
+		sc := Scenario{Profile: "panos-11.1"}
+		var err error
+		if *c, _, err = sc.Apply(*c); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// Portal: password, then an XML challenge.
+	code, body := f.post("/global-protect/getconfig.esp", loginForm("test", "test"))
+	var ch struct {
+		InputStr string `xml:"inputstr"`
+		Msg      string `xml:"respmsg"`
+	}
+	if code != 200 || xml.Unmarshal([]byte(body), &ch) != nil || ch.InputStr == "" {
+		t.Fatalf("portal step 1: %d %s", code, body)
+	}
+	if ch.Msg != "Enter MFA-Duo passcode (or '1' for Duo Push)" {
+		t.Errorf("portal prompt %q", ch.Msg)
+	}
+	form := loginForm("test", "1")
+	form.Set("inputStr", ch.InputStr)
+	code, body = f.post("/global-protect/getconfig.esp", form)
+	if code != 200 || !strings.Contains(body, "<portal-userauthcookie>empty</portal-userauthcookie>") {
+		t.Fatalf("portal step 2: %d %s", code, body)
+	}
+
+	// Gateway: the password again, then a JavaScript challenge.
+	code, body = f.post("/ssl-vpn/login.esp", loginForm("test", "test"))
+	m := jsInputStr.FindStringSubmatch(body)
+	if code != 200 || m == nil || !strings.Contains(body, `var respStatus = "Challenge";`) {
+		t.Fatalf("gateway step 1: %d %s", code, body)
+	}
+	form = loginForm("test", "1")
+	form.Set("inputStr", m[1])
+	code, body = f.post("/ssl-vpn/login.esp", form)
+	var jnlp struct {
+		Args []string `xml:"application-desc>argument"`
+	}
+	if code != 200 || xml.Unmarshal([]byte(body), &jnlp) != nil || len(jnlp.Args) != 22 {
+		t.Fatalf("gateway step 2: %d %s", code, body)
+	}
+	if jnlp.Args[16] != "empty" || jnlp.Args[19] != "4" {
+		t.Errorf("jnlp args %q", jnlp.Args)
+	}
+
+	code, body = f.post("/ssl-vpn/getconfig.esp", url.Values{"authcookie": {jnlp.Args[1]}, "user": {"test"}})
+	for _, want := range []string{"<mtu>0</mtu>", "<lifetime>259200</lifetime>", "<timeout>43200</timeout>",
+		"<disconnect-on-idle>43200</disconnect-on-idle>", `<response status="success">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("getconfig lacks %s: %s", want, body)
+		}
+	}
+	code, body = f.post("/ssl-vpn/hipreportcheck.esp", url.Values{"authcookie": {jnlp.Args[1]}, "user": {"test"}, "md5": {"x"}})
+	if code != 200 || !strings.Contains(body, "<hip-report-needed>yes</hip-report-needed>") {
+		t.Errorf("hipreportcheck: %d %s", code, body)
+	}
+}
+
+func TestPortalChallengeOffByDefault(t *testing.T) {
+	f := newFixture(t, nil)
+	code, body := f.post("/global-protect/getconfig.esp", loginForm("test", "test"))
+	if code != 200 || !strings.HasPrefix(body, "<?xml") || !strings.Contains(body, "<policy>") {
+		t.Fatalf("portal: %d %s", code, body)
+	}
+}
+
+func TestJSStringEscapes(t *testing.T) {
+	if got := jsString("a \"b\"\n1. <c>"); got != `"a \"b\"\n1. <c>"` {
+		t.Errorf("jsString = %s", got)
 	}
 }
