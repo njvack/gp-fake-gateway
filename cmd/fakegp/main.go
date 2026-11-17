@@ -30,6 +30,7 @@ func main() {
 	configFile := flag.String("config", "", "JSON config file, merged over the defaults")
 	pinFile := flag.String("pin-file", "", "write the openconnect --servercert pin here")
 	scenarioFile := flag.String("scenario", "", "scenario file (see scenarios/): a profile, config and fault rules")
+	profile := flag.String("profile", "", "gateway profile to start from ("+strings.Join(gateway.Profiles(), ", ")+"); a scenario's profile wins")
 	verbose := flag.Bool("v", false, "debug logging")
 	flag.Parse()
 
@@ -40,6 +41,13 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	cfg := gateway.DefaultConfig()
+	if *profile != "" {
+		// The profile first, so -config can change it.
+		var err error
+		if cfg, _, err = (gateway.Scenario{Profile: *profile}).Apply(cfg); err != nil {
+			fatal(log, "profile", err)
+		}
+	}
 	if *configFile != "" {
 		data, err := os.ReadFile(*configFile)
 		if err != nil {

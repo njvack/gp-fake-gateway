@@ -1,0 +1,15 @@
+{
+  "description": "PAN-OS 11.1.13 with GlobalProtect 6.2.8, as captured in njvack/albi#15: Duo on both the portal and the gateway, no portal override cookie (so a portal-then-gateway client answers two pushes), the gateway's challenge as JavaScript, MTU 0, 72 h cookies with a 12 h rekey and idle timeout, and a HIP report wanted on connect. The real gateway offers ESP; the fake does not.",
+  "config": {
+    "portal_second_factor": true,
+    "challenge_style": "javascript",
+    "second_factor_prompt": "Enter MFA-Duo passcode (or '1' for Duo Push)",
+    "mtu": 0,
+    "lifetime": 259200,
+    "rekey": 43200,
+    "idle_timeout": 43200,
+    "hip_interval": 3600,
+    "hip_needed": true
+  },
+  "rules": []
+}

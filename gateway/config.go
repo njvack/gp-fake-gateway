@@ -22,6 +22,16 @@ type Config struct {
 	SecondFactor       string `json:"second_factor"`
 	SecondFactorAnswer string `json:"second_factor_answer"`
 	SecondFactorPrompt string `json:"second_factor_prompt"`
+	// PortalSecondFactor makes the portal's getconfig.esp challenge too, so
+	// a client doing portal then gateway answers two challenges (two Duo
+	// pushes), as PAN-OS 11.1 with Duo on both does. The portal never hands
+	// out an override cookie (portal-userauthcookie is "empty"), so the
+	// gateway always wants the password again.
+	PortalSecondFactor bool `json:"portal_second_factor"`
+	// ChallengeStyle is how the gateway's login.esp sends its challenge:
+	// "xml" (<challenge>, as the portal always does) or "javascript" (an
+	// HTML page with var respStatus = "Challenge", as PAN-OS 11.1 does).
+	ChallengeStyle string `json:"challenge_style"`
 
 	// Tunnel configuration handed out by getconfig.esp.
 	ClientIPv4    string   `json:"client_ipv4"`
@@ -63,6 +73,7 @@ func DefaultConfig() Config {
 		SecondFactor:       "challenge",
 		SecondFactorAnswer: "1",
 		SecondFactorPrompt: "Enter a passcode or select one of the following options:\n 1. Duo Push to XXX-XXX-1234\n 2. Phone call to XXX-XXX-1234",
+		ChallengeStyle:     "xml",
 		ClientIPv4:         "10.99.0.2",
 		AccessRoutes:       []string{"10.99.0.0/24"},
 		DNS:                []string{"10.99.0.53"},
