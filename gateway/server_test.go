@@ -257,6 +257,24 @@ func TestTunnel(t *testing.T) {
 	}
 }
 
+func TestTunnelStallsOnSharedRecord(t *testing.T) {
+	f := newFixture(t, nil)
+	cookie := f.login("test", "test", "1")
+	conn, br, head := f.openTunnel(cookie)
+	if head != "START_TUNNEL" {
+		t.Fatalf("tunnel start = %q", head)
+	}
+	// Two keepalives in one write go out as one TLS record.
+	conn.Write(append(EncodeFrame(Frame{}), EncodeFrame(Frame{})...))
+	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if got, err := ReadFrame(br); err == nil {
+		t.Fatalf("answered %+v after a shared record", got)
+	}
+	if s := f.srv.Sessions()[0]; !s.Stalled || s.Keepalives != 0 {
+		t.Errorf("session = %+v, want stalled with no keepalives answered", s)
+	}
+}
+
 func TestCookieExpiry(t *testing.T) {
 	f := newFixture(t, func(c *Config) { c.Lifetime = 600; c.IdleTimeout = 0 })
 

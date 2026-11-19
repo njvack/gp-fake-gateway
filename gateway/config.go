@@ -64,6 +64,11 @@ type Config struct {
 	DropTunnelAfter int  `json:"drop_tunnel_after"` // seconds; close tunnels this long after they start
 	StallSeconds    int  `json:"stall_seconds"`     // delay every HTTP response
 	IgnoreKeepalive bool `json:"ignore_keepalive"`  // don't answer GPST keepalives (simulates a dead path)
+
+	// AllowSharedRecords accepts TLS records holding more or less than one
+	// GPST frame. Without it a tunnel stalls on one, as PAN-OS 11.1 did
+	// (njvack/albi#34): TCP stays up and nothing more is answered.
+	AllowSharedRecords bool `json:"allow_shared_records"`
 }
 
 // DefaultConfig returns the configuration used when nothing else is given.

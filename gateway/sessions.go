@@ -34,6 +34,7 @@ type Session struct {
 	Keepalives int         `json:"keepalives"`  // GPST keepalives answered
 	PacketsIn  int         `json:"packets_in"`  // data packets from the client
 	PacketsOut int         `json:"packets_out"` // data packets to the client
+	Stalled    bool        `json:"stalled"`     // a tunnel stalled on a record without exactly one frame
 	HIPChecks  int         `json:"hip_checks"`
 	HIPReports []HIPReport `json:"hip_reports"`
 }
