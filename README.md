@@ -46,6 +46,7 @@ The default user is `test` / `test`, the challenge answer is `1`, the client get
 | `drop_tunnel_after` | 0 | close each tunnel this many seconds after it starts |
 | `stall_seconds` | 0 | delay every HTTP response |
 | `ignore_keepalive` | false | stop answering GPST keepalives (a dead path) |
+| `allow_shared_records` | false | accept a TLS record holding several GPST frames or part of one. Without it the tunnel stalls on such a record (TCP stays up, nothing more is answered, the session shows `stalled`), as PAN-OS 11.1 did with batched frames in njvack/albi#34 |
 
 The portal never hands out an authentication override cookie (`portal-userauthcookie` is `empty`), so a client always logs in to the gateway with the password again. Response shapes (extra getconfig fields, the 22 jnlp arguments, hipreportcheck's `delay` and `quarantine`) follow a real PAN-OS 11.1 capture.
 

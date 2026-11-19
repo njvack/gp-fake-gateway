@@ -168,36 +168,102 @@ func (s *Server) serveTunnel(conn net.Conn, br *bufio.Reader, user, cookie strin
 	}
 	s.log.Info("tunnel up", "user", user)
 
+	rr := recordReader{conn: conn}
+	if n := br.Buffered(); n > 0 {
+		rr.pending, _ = br.Peek(n)
+	}
+	stalled := false
 	for {
-		f, err := ReadFrame(br)
+		frames, whole, err := rr.next()
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				s.log.Info("tunnel read", "user", user, "err", err)
 			}
 			return
 		}
-		if f.IsKeepalive() {
-			if s.cfg.get().IgnoreKeepalive || t.ignoreKeepalive.Load() {
+		if !stalled && (!whole || len(frames) > 1) && !s.cfg.get().AllowSharedRecords {
+			// What PAN-OS 11.1 did: TCP stays up, the tunnel goes quiet.
+			stalled = true
+			s.log.Info("tunnel stalled: TLS record without exactly one GPST frame", "user", user, "frames", len(frames), "whole", whole)
+			s.sessions.update(cookie, func(ss *Session) { ss.Stalled = true })
+		}
+		for _, f := range frames {
+			if stalled {
 				continue
 			}
-			s.sessions.update(cookie, func(ss *Session) { ss.Keepalives++ })
-			if _, err := t.Write(EncodeFrame(Frame{})); err != nil {
+			if f.IsKeepalive() {
+				if s.cfg.get().IgnoreKeepalive || t.ignoreKeepalive.Load() {
+					continue
+				}
+				s.sessions.update(cookie, func(ss *Session) { ss.Keepalives++ })
+				if _, err := t.Write(EncodeFrame(Frame{})); err != nil {
+					return
+				}
+				continue
+			}
+			s.sessions.update(cookie, func(ss *Session) { ss.PacketsIn++ })
+			reply := Respond(f.Payload)
+			if reply == nil {
+				continue
+			}
+			et := uint16(etherIPv4)
+			if reply[0]>>4 == 6 {
+				et = etherIPv6
+			}
+			if _, err := t.Write(EncodeFrame(Frame{EtherType: et, Payload: reply})); err != nil {
 				return
 			}
-			continue
+			s.sessions.update(cookie, func(ss *Session) { ss.PacketsOut++ })
 		}
-		s.sessions.update(cookie, func(ss *Session) { ss.PacketsIn++ })
-		reply := Respond(f.Payload)
-		if reply == nil {
-			continue
-		}
-		et := uint16(etherIPv4)
-		if reply[0]>>4 == 6 {
-			et = etherIPv6
-		}
-		if _, err := t.Write(EncodeFrame(Frame{EtherType: et, Payload: reply})); err != nil {
-			return
-		}
-		s.sessions.update(cookie, func(ss *Session) { ss.PacketsOut++ })
 	}
+}
+
+// recordReader reads a tunnel one TLS record at a time: crypto/tls returns
+// at most one record's plaintext per Read, given a buffer that can hold it.
+type recordReader struct {
+	conn    net.Conn
+	pending []byte // bytes a bufio.Reader held before the tunnel started
+	buf     []byte // a partial frame carried over from the last record
+	scratch [1 << 16]byte
+}
+
+// next reads one record and returns the frames it completes. whole is false
+// when the record ends partway through a frame.
+func (r *recordReader) next() (frames []Frame, whole bool, err error) {
+	var rec []byte
+	if r.pending != nil {
+		rec, r.pending = append([]byte(nil), r.pending...), nil
+	} else {
+		n, err := r.conn.Read(r.scratch[:])
+		if n == 0 {
+			if err == nil {
+				err = io.ErrNoProgress
+			}
+			return nil, false, err
+		}
+		rec = r.scratch[:n]
+	}
+	r.buf = append(r.buf, rec...)
+	for len(r.buf) >= gpstHeaderLen {
+		if binary.BigEndian.Uint32(r.buf[0:]) != gpstMagic {
+			return frames, false, ErrBadMagic
+		}
+		n := int(binary.BigEndian.Uint16(r.buf[6:]))
+		if len(r.buf) < gpstHeaderLen+n {
+			break
+		}
+		f := Frame{EtherType: binary.BigEndian.Uint16(r.buf[4:])}
+		if n > 0 {
+			f.Payload = append([]byte(nil), r.buf[gpstHeaderLen:gpstHeaderLen+n]...)
+		}
+		frames = append(frames, f)
+		r.buf = r.buf[gpstHeaderLen+n:]
+	}
+	whole = len(r.buf) == 0
+	if whole {
+		r.buf = nil
+	} else {
+		r.buf = append([]byte(nil), r.buf...)
+	}
+	return frames, whole, nil
 }
